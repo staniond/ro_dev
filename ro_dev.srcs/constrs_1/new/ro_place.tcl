@@ -59,8 +59,16 @@ proc ro_site_problem {site} {
     return ""
 }
 
+# Clock declared on each RO's ring output (ring2 = lut_inv2/O), which clocks the
+# toggle FF. Without it, check_timing reports no_clock on gen_ro[*].u_ro/ff/C and
+# the FF isn't timed at all. The period only steers timing analysis, not the
+# hardware: route + LUT delays put the real ring at roughly 2..4.6 ns depending on
+# silicon and temperature, and 2.0 ns (the fast end) makes the FF check strict.
+# Each RO clock is asynchronous to every other clock.
+set RO_CLK_PERIOD 2.000
+
 proc ro_place {inst site} {
-    global RO_BELS
+    global RO_BELS RO_CLK_PERIOD
     foreach {cell bel pins} $RO_BELS {
         set c [get_cells $inst/$cell]
         set_property BEL $bel $c           ;# BEL first, then LOC
@@ -72,6 +80,16 @@ proc ro_place {inst site} {
     # The ring is a deliberate combinational loop; without this, DRC LUTLP-1
     # stops write_bitstream.
     set_property ALLOW_COMBINATORIAL_LOOPS TRUE [get_nets $inst/ring*]
+
+    set clk "ro_clk_[regsub -all {[^A-Za-z0-9]+} $inst _]"   ;# gen_ro[0].u_ro -> ro_clk_gen_ro_0_u_ro
+    create_clock -name $clk -period $RO_CLK_PERIOD [get_pins $inst/lut_inv2/O]
+    set_clock_groups -asynchronous -group [get_clocks $clk]
+    # report_methodology flags a clock that starts at / passes through a LUT.
+    # For a RO that is the design, so waive exactly these objects.
+    create_waiver -type METHODOLOGY -id TIMING-2  -objects [get_pins $inst/lut_inv2/O] \
+        -description "RO: ring output is the toggle-FF clock by design"
+    create_waiver -type METHODOLOGY -id TIMING-14 -objects [get_cells $inst/lut_inv2] \
+        -description "RO: ring LUT drives the toggle-FF clock by design"
 }
 
 # A RO with a problem is reported and left completely alone: no placement,

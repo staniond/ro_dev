@@ -124,6 +124,16 @@ location. The rest gets placed by `place_design` during implementation (`impl_1`
   instance, and then the routes would differ.
 - For every RO it sets `BEL` + `LOC` on the 6 cells. It also sets `ALLOW_COMBINATORIAL_LOOPS` on the
   ring nets; without it, DRC **LUTLP-1** (an error) stops `write_bitstream`.
+- For every RO it declares a clock on the ring output (`create_clock` on `lut_inv2/O`, named e.g.
+  `ro_clk_gen_ro_0_u_ro`, asynchronous to all other clocks). Without it, `check_timing` reports
+  `no_clock` on `gen_ro[*].u_ro/ff/C` and the toggle FF isn't timed. `RO_CLK_PERIOD` (2.0 ns) only
+  steers the analysis: route + LUT delays put the real ring at roughly 2-4.6 ns depending on
+  silicon and temperature, so 2.0 ns is the strict end. The toggle FF meets it with ~1.1 ns slack.
+  Vivado can't time the ring itself (it cuts combinational loops for analysis); measure the real
+  frequency on the board.
+- Clocks starting at a LUT trigger `report_methodology` critical warnings TIMING-2 (clock on a
+  non-clock pin) and TIMING-14 (LUT on the clock tree). For a RO that is the design, so each RO gets
+  a waiver (`create_waiver`) for exactly those objects; the report lists them under *Checks waived*.
 - It **checks every entry first**: the site must exist and be the RO type (below), no site may be used
   twice, the instance must exist, and every `ro_cell` must have an entry. A bad entry is reported as
   `CRITICAL WARNING: [RO 1-1] ro_place.tcl: gen_ro[2].u_ro NOT placed: SLICE_X38Y104 is a SLICEM in a
