@@ -13,7 +13,7 @@
 # Nets of one ro_cell that leave the slice and therefore need routing, in the
 # order they get routing resources (ring first: it sets the frequency).
 # (d is slice-internal; en comes from outside the cell and is left to the router.)
-set RO_NETS {ring0 ring1 ring2 q en_n}
+set ::RO_NETS {ring0 ring1 ring2 q en_n}
 
 proc ro_instances {} {
     return [get_cells -hierarchical -quiet -filter {ORIG_REF_NAME == ro_cell || REF_NAME == ro_cell}]
@@ -206,4 +206,5 @@ proc ro_check {} {
                   [expr {[llength $problems] ? [join [lsort -unique $problems] ", "] : "OK"}]]
     }
     puts "ro_check: [llength $insts] RO(s), $n_bad with problems"
+    return $n_bad
 }
