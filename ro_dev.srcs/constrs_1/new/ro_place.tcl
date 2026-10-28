@@ -62,10 +62,12 @@ proc ro_site_problem {site} {
 # Clock declared on each RO's ring output (ring2 = lut_inv2/O), which clocks the
 # toggle FF. Without it, check_timing reports no_clock on gen_ro[*].u_ro/ff/C and
 # the FF isn't timed at all. The period only steers timing analysis, not the
-# hardware: route + LUT delays put the real ring at roughly 2..4.6 ns depending on
-# silicon and temperature, and 2.0 ns (the fast end) makes the FF check strict.
+# hardware. Ring period = 2 x (3 LUT arcs + 3 ring nets), from the routed design
+# (get_timing_arcs / get_net_delays): 4.58 ns slow corner, 1.58 ns fast corner
+# (min delays). 1.5 ns covers the fastest case, so the FF check is strict; the
+# FF itself needs >= 1.0 ns period / 0.5 ns pulse width.
 # Each RO clock is asynchronous to every other clock.
-set RO_CLK_PERIOD 2.000
+set RO_CLK_PERIOD 1.500
 
 proc ro_place {inst site} {
     global RO_BELS RO_CLK_PERIOD

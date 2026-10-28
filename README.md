@@ -126,11 +126,9 @@ location. The rest gets placed by `place_design` during implementation (`impl_1`
   ring nets; without it, DRC **LUTLP-1** (an error) stops `write_bitstream`.
 - For every RO it declares a clock on the ring output (`create_clock` on `lut_inv2/O`, named e.g.
   `ro_clk_gen_ro_0_u_ro`, asynchronous to all other clocks). Without it, `check_timing` reports
-  `no_clock` on `gen_ro[*].u_ro/ff/C` and the toggle FF isn't timed. `RO_CLK_PERIOD` (2.0 ns) only
-  steers the analysis: route + LUT delays put the real ring at roughly 2-4.6 ns depending on
-  silicon and temperature, so 2.0 ns is the strict end. The toggle FF meets it with ~1.1 ns slack.
-  Vivado can't time the ring itself (it cuts combinational loops for analysis); measure the real
-  frequency on the board.
+  `no_clock` on `gen_ro[*].u_ro/ff/C` and the toggle FF isn't timed. The period `RO_CLK_PERIOD`
+  (1.5 ns) only steers the analysis; see [RO timing](#ro-timing-ring-period-and-the-clock-constraint)
+  for where it comes from.
 - Clocks starting at a LUT trigger `report_methodology` critical warnings TIMING-2 (clock on a
   non-clock pin) and TIMING-14 (LUT on the clock tree). For a RO that is the design, so each RO gets
   a waiver (`create_waiver`) for exactly those objects; the report lists them under *Checks waived*.
@@ -357,3 +355,156 @@ The UART echo from the template is still in `top.vhd`. Connect the UART and run:
 
 - --omap crlf: Enter sends LF, which is the byte the FSM uses as end of line.
 - --imap lfcrlf: the LF the FPGA sends is displayed as CR+LF, so each echoed line starts at column 0.
+
+## RO timing: ring period and the clock constraint
+
+`ro_place.tcl` declares a clock on every RO's ring output (`lut_inv2/O`), because that signal
+clocks the toggle FF. Its period, `RO_CLK_PERIOD = 1.5 ns`, does **not** change the hardware: the
+ring runs at whatever speed the silicon gives it. It only tells timing analysis how fast to assume
+the FF is clocked, so it should be at least as fast as the fastest the ring can possibly run.
+Otherwise the FF check could pass while the real ring is too fast for the FF.
+
+Vivado can't give that number directly. It cuts every combinational loop at some point for
+analysis, so `report_timing` around the ring finds no path. The period has to be added up from
+the delays of the individual parts.
+
+### How the period is calculated
+
+The ring has 3 stages (NAND, inverter, inverter), each a LUT followed by a routed net. All three
+invert, so an edge that goes once around the loop comes back inverted: one trip around gives half
+a period, and a full period is **two trips**, one with each edge direction. Each stage's LUT is
+passed once rising and once falling, and each net is passed twice:
+
+```
+period = sum over the 3 stages of ( LUT rise + LUT fall + 2 x net delay )
+```
+
+### Timing corners
+
+For 7-series, Vivado's timing model has **two corners**, and each gives a **max** and a **min** delay
+for every LUT arc and every net. That makes four values, all of which the Tcl below reads:
+
+| Value | Corner | Delay bound | Used by Vivado for |
+|---|---|---|---|
+| `SLOW_MAX` | Slow: slowest process, highest temperature of the device grade, lowest supply voltage | max | setup checks: **slowest ring** |
+| `SLOW_MIN` | Slow | min | hold checks |
+| `FAST_MAX` | Fast: fastest process, lowest temperature, highest supply voltage | max | setup checks |
+| `FAST_MIN` | Fast | min | hold checks: **fastest ring** |
+
+Each corner is calculated the same way: take that corner's value for every LUT (rise and fall) and
+every net, and add them up with the formula above. Results for this design (all ROs are identical,
+so `gen_ro[0]` stands for all):
+
+| Value | 3 LUTs (rise + fall) | 3 nets (x 2) | Period | Frequency |
+|---|---|---|---|---|
+| `SLOW_MAX` | 0.744 ns | 3.838 ns | 4.58 ns | 218 MHz |
+| `SLOW_MIN` | 0.600 ns | 3.190 ns | 3.79 ns | 264 MHz |
+| `FAST_MAX` | 0.336 ns | 1.550 ns | 1.89 ns | 530 MHz |
+| `FAST_MIN` | 0.270 ns | 1.306 ns | **1.58 ns** | **635 MHz** |
+
+**There is no typical corner.** Vivado's 7-series timing data only covers these sign-off bounds.
+`set_operating_conditions` (process `typical`, temperature, ...) changes power estimates only; the
+timing delays stay exactly the same. A typical value has to come from measurement:
+
+| Typical (measured) | Period | Frequency |
+|---|---|---|
+| Hesselbarth et al., Table II: same RO architecture, Artix-7 XC7A35T -1, room temperature, mean over 217 boards | ~2.2 ns | **451-457 MHz** |
+
+That is the same architecture and FPGA family, but their own placement and routing, so take it as
+the expected ballpark, not a prediction for this design. In the paper, the frequency also varies
+about 4.8 % between boards, ROs next to the clock distribution run about 20 MHz slower, and the
+frequency changes with temperature (Fig. 6). Measure your own ROs on the board for the real number.
+
+`RO_CLK_PERIOD = 1.5 ns` sits just below the fastest corner (`FAST_MIN`), so the FF check is strict.
+
+### Tcl: get the delays and compute the period
+
+With the implemented design open (`open_run impl_1`), paste into the Tcl Console:
+
+```tcl
+set inst {gen_ro[0].u_ro}
+
+# One stage per ring LUT: the LUT, its ring input pin, the net it drives, and the
+# next LUT's input pin on the ring (ring2 also goes to ff/C; we want the ring branch).
+set stages {
+    lut_nand I1 ring0 lut_inv1/I0
+    lut_inv1 I0 ring1 lut_inv2/I0
+    lut_inv2 I0 ring2 lut_nand/I1
+}
+
+foreach corner {SLOW_MAX SLOW_MIN FAST_MAX FAST_MIN} {
+    set period 0.0
+    puts "$corner:"
+    foreach {lut in net next} $stages {
+        set arc  [get_timing_arcs -from [get_pins $inst/$lut/$in] -to [get_pins $inst/$lut/O]]
+        set rise [get_property DELAY_${corner}_RISE $arc]                  ;# ns
+        set fall [get_property DELAY_${corner}_FALL $arc]                  ;# ns
+        set nd   [get_net_delays -of_objects [get_nets $inst/$net] -to [get_pins $inst/$next]]
+        set net_ns [expr {[get_property $corner $nd] / 1000.0}]            ;# ps -> ns
+        puts [format "  %-8s rise %.3f  fall %.3f   %s %.3f ns" $lut $rise $fall $net $net_ns]
+        set period [expr {$period + $rise + $fall + 2 * $net_ns}]
+    }
+    puts [format "  period %.2f ns = %.0f MHz" $period [expr {1000.0 / $period}]]
+}
+```
+
+Output:
+
+```
+SLOW_MAX:
+  lut_nand rise 0.124  fall 0.124   ring0 0.532 ns
+  lut_inv1 rise 0.124  fall 0.124   ring1 0.520 ns
+  lut_inv2 rise 0.124  fall 0.124   ring2 0.867 ns
+  period 4.58 ns = 218 MHz
+SLOW_MIN:
+  lut_nand rise 0.100  fall 0.100   ring0 0.445 ns
+  lut_inv1 rise 0.100  fall 0.100   ring1 0.436 ns
+  lut_inv2 rise 0.100  fall 0.100   ring2 0.714 ns
+  period 3.79 ns = 264 MHz
+FAST_MAX:
+  lut_nand rise 0.056  fall 0.056   ring0 0.200 ns
+  lut_inv1 rise 0.056  fall 0.056   ring1 0.212 ns
+  lut_inv2 rise 0.056  fall 0.056   ring2 0.363 ns
+  period 1.89 ns = 530 MHz
+FAST_MIN:
+  lut_nand rise 0.045  fall 0.045   ring0 0.171 ns
+  lut_inv1 rise 0.045  fall 0.045   ring1 0.180 ns
+  lut_inv2 rise 0.045  fall 0.045   ring2 0.302 ns
+  period 1.58 ns = 635 MHz
+```
+
+The two commands doing the work:
+
+- `get_timing_arcs -from <LUT input pin> -to <LUT output pin>`: the LUT's timing arc. Its properties
+  `DELAY_<corner>_RISE` / `_FALL` are the delays through the LUT for a rising / falling output, in ns.
+  The arc depends on the physical LUT pin, which `LOCK_PINS` fixes.
+- `get_net_delays -of_objects <net> -to <load pin>`: the routed delay of a net to one load. Its
+  properties `SLOW_MAX`, `SLOW_MIN`, `FAST_MAX`, `FAST_MIN` are in **ps**.
+
+### Does the toggle FF keep up? (checked automatically)
+
+Nothing to run by hand: because `ro_place.tcl` declares the `ro_clk_*` clocks, every implementation
+run times the toggle FFs together with the rest of the design. The results are in the timing
+summary that `route_design` writes (`ro_dev.runs/impl_1/top_timing_summary_routed.rpt`) and in the
+**Design Runs** window (WNS / WHS / TPWS of `impl_1`).
+
+Note that a timing failure does **not** stop the bitstream: Vivado only reports
+`CRITICAL WARNING: [Timing 38-282] The design failed to meet the timing requirements` and writes
+`top.bit` anyway. So check that WNS, WHS and TPWS are not negative. For the ROs this can only
+change if `ro_cell` or `RO_BELS` change, since their placement and routes are fixed.
+
+To look at one RO in detail (implemented design open):
+
+```tcl
+report_timing -from [get_cells {gen_ro[0].u_ro/ff}] -to [get_cells {gen_ro[0].u_ro/ff}]
+report_pulse_width -clocks [get_clocks ro_clk_gen_ro_0_u_ro]
+```
+
+| Check | Required | At 1.5 ns | Slack |
+|---|---|---|---|
+| Setup, path q -> D6LUT -> D | 0.89 ns data delay | 1.5 ns period | 0.61 ns |
+| FF minimum clock period (`FDCE/C`) | 1.0 ns | 1.5 ns | 0.50 ns |
+| FF minimum high / low pulse | 0.5 ns | 0.75 ns | 0.25 ns |
+
+So the toggle FF can follow the ring even at its fastest corner. The FF itself could toggle at up
+to 1 GHz. The full picture for all ROs is in `report_timing_summary` (one `ro_clk_*` per RO).
