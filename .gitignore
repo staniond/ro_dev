@@ -1,0 +1,60 @@
+# Vivado 2025.1 project-mode .gitignore
+#
+# Tracked (needed to clone & open):
+#   *.xpr                 - project file
+#   *.srcs/sources_1      - HDL sources
+#   *.srcs/sim_1          - testbenches
+#   *.srcs/constrs_1      - constraints
+#   *.wcfg                - waveform configs referenced from the .xpr
+#   *.bd / *.xci / *.xcix - block designs and IP configs (if added later)
+
+# Generated project directories (recreated by Vivado)
+*.cache/
+*.gen/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.sim/
+.Xil/
+NA/
+
+# Auto-incremental synthesis checkpoint (rewritten after every synth run)
+*.srcs/utils_1/
+
+# Logs, journals and misc Vivado droppings
+*.jou
+*.log
+*.str
+*.pb
+*.wdb
+vivado_pid*.str
+vivado_pid*.zip
+webtalk*
+xsim.dir/
+*.backup.*
+hs_err_pid*.log
+
+# IP generated outputs inside *.srcs (keep the .xci, drop the rest)
+*.srcs/**/ip/**/*
+!*.srcs/**/ip/*/
+!*.srcs/**/ip/**/*.xci
+!*.srcs/**/ip/**/*.xcix
+!*.srcs/**/ip/**/*.coe
+!*.srcs/**/ip/**/*.mem
+
+# Block design generated outputs (keep the .bd)
+*.srcs/**/bd/**/hdl/
+*.srcs/**/bd/**/ip/
+*.srcs/**/bd/**/ipshared/
+*.srcs/**/bd/**/sim/
+*.srcs/**/bd/**/synth/
+*.srcs/**/bd/**/*.bxml
+*.srcs/**/bd/**/*.bda
+*.srcs/**/bd/**/ui/
+
+# Bitstreams (uncomment if you DON'T want to keep released bitfiles)
+# *.bit
+# *.ltx
+
+# Licensed IEEE copy of the reference paper (cited in README.md) - keep local only
+Large_scale_RO_PUF_analysis_over_slice_type_evaluation_time_and_temperature_on_28nm_Xilinx_FPGAs.pdf
