@@ -66,7 +66,10 @@ proc ro_site_problem {site} {
 # (get_timing_arcs / get_net_delays): 4.58 ns slow corner, 1.58 ns fast corner
 # (min delays). 1.5 ns covers the fastest case, so the FF check is strict; the
 # FF itself needs >= 1.0 ns period / 0.5 ns pulse width.
-# Each RO clock is asynchronous to every other clock.
+# No set_clock_groups here: a group created now would also declare the RO clock
+# asynchronous to clocks derived from it later (e.g. by ro_prescaler.tcl), which
+# is wrong (methodology TIMING-47). Nothing crosses from a RO clock into another
+# clock domain; if you add such logic, constrain that crossing (CDC) there.
 set RO_CLK_PERIOD 1.500
 
 proc ro_place {inst site} {
@@ -85,7 +88,6 @@ proc ro_place {inst site} {
 
     set clk "ro_clk_[regsub -all {[^A-Za-z0-9]+} $inst _]"   ;# gen_ro[0].u_ro -> ro_clk_gen_ro_0_u_ro
     create_clock -name $clk -period $RO_CLK_PERIOD [get_pins $inst/lut_inv2/O]
-    set_clock_groups -asynchronous -group [get_clocks $clk]
     # report_methodology flags a clock that starts at / passes through a LUT.
     # For a RO that is the design, so waive exactly these objects.
     create_waiver -type METHODOLOGY -id TIMING-2  -objects [get_pins $inst/lut_inv2/O] \

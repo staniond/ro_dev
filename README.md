@@ -72,7 +72,8 @@ how the flow works and how to inspect it; you don't need it to build.
                        │  constrs_1, in this order:
                        ├── cw305_main.xdc : board/design constraints (pins, clocks, I/O)
                        ├── ro_place.tcl   : LOC + BEL + LOCK_PINS -> RO cells placed & fixed
-                       └── ro_routes.tcl  : FIXED_ROUTE           -> RO nets routed & fixed
+                       ├── ro_routes.tcl  : FIXED_ROUTE           -> RO nets routed & fixed
+                       └── ro_prescaler.tcl : clocks for ro_prescaler stages (only if you use one)
                                                                       write_bitstream pre-hook:
                                                                       ro_check_hook.tcl -> no OK, no bitstream
 ```
@@ -130,7 +131,7 @@ would still be written. Unlike in a constraint file, an `error` in a hook does s
 - For every RO it sets `BEL` + `LOC` on the 6 cells. It also sets `ALLOW_COMBINATORIAL_LOOPS` on the
   ring nets; without it, DRC **LUTLP-1** (an error) stops `write_bitstream`.
 - For every RO it declares a clock on the ring output (`create_clock` on `lut_inv2/O`, named e.g.
-  `ro_clk_gen_ro_0_u_ro`, asynchronous to all other clocks). Without it, `check_timing` reports
+  `ro_clk_gen_ro_0_u_ro`). Without it, `check_timing` reports
   `no_clock` on `gen_ro[*].u_ro/ff/C` and the toggle FF isn't timed. The period `RO_CLK_PERIOD`
   (1.5 ns) only steers the analysis; see [RO timing](#ro-timing-ring-period-and-the-clock-constraint)
   for where it comes from.
@@ -216,6 +217,36 @@ design):
 | `report_methodology` | 2 checks waived per RO (TIMING-2, TIMING-14: the RO clocks), and one TIMING-23 *Combinational loop found* warning per RO (the ring) |
 | `check_timing` | `loops`: one per RO (the ring). `no_clock` must be 0 |
 | Timing summary | one `ro_clk_*` clock per RO, each with setup slack ~0.61 ns, hold ~0.21 ns, pulse width 0.25 ns |
+
+### `ro_prescaler` (optional): divide a RO output for slow equipment
+
+`ro_dev.srcs/sources_1/new/ro_prescaler.vhd` divides a signal by a generic `DIVIDE`, e.g. a RO's
+`ro_out` before a pin, so a slow logic analyzer or counter can measure it:
+
+```vhdl
+u_ro_prescaler: entity work.ro_prescaler
+    generic map (DIVIDE => 256)                         -- power of two >= 2
+    port map (clk_in => ro_out(0), clk_out => some_pin);
+```
+
+The RO frequency is then `f_RO = 2 x DIVIDE x f(pin)` (the RO's toggle FF already divides by 2).
+
+- It's a **ripple divider**: `log2(DIVIDE)` toggle flip-flops, each clocked by the previous one's
+  output. Only the first runs at RO speed (~100-350 MHz at `ro_out`), so there's no wide counter
+  that would have to meet timing at that rate. No reset: the phase is arbitrary, which doesn't
+  matter for frequency measurement.
+- `DIVIDE` must be a power of two. Anything else stops synthesis and simulation with
+  `assigned value '0' out of range` at the `DIVIDE_IS_POWER_OF_TWO` constant. (Vivado synthesis
+  ignores `assert` by default, so a range-checked constant is used instead.)
+- Each stage is clocked by a flip-flop output, and Vivado doesn't propagate clocks through
+  flip-flops. `ro_dev.srcs/constrs_1/new/ro_prescaler.tcl` (constraint, implementation only)
+  therefore creates a generated clock on every stage's clock pin, for every `ro_prescaler` it finds:
+  `<inst>_in` at stage 0 (when `clk_in` comes from a `ro_cell`), `<inst>_div2`, `<inst>_div4`, ...
+  The clocks sit on the clock pins (`C`), not on the `Q` outputs, so each flip-flop's own toggle
+  path stays timed against the right edge. It relies on the flip-flop names
+  `gen_stage[i].stage_reg[i]` from the VHDL.
+- The output toggles asynchronously to everything else; if it goes to a pin, cut that pin from
+  timing (`set_false_path -to [get_ports ...]`).
 
 ## Walkthrough: the flow step by step
 

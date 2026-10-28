@@ -33,7 +33,7 @@ set_property PACKAGE_PIN N13 [get_ports pll_clk1]
 
 ######## 20-Pin Connector
 
-#set_property PACKAGE_PIN T14 [get_ports tio_trigger]
+set_property PACKAGE_PIN T14 [get_ports tio_trigger]
 
 #set_property PACKAGE_PIN M16 [get_ports tio_clkout]
 
@@ -116,7 +116,7 @@ set_property IOSTANDARD LVCMOS33 [get_ports *]
 # none of the used I/O is synchronous to pll_clk1, so there is no
 # meaningful input/output delay to give - cut them from timing instead.
 set_false_path -from [get_ports {A12 pushbutton_n dip_switch[*]}]
-set_false_path -to   [get_ports {A14 led1 led2 led3}]
+set_false_path -to   [get_ports {A14 led1 led2 led3 tio_trigger}]
 
 set_property CFGBVS VCCO [current_design]
 set_property CONFIG_VOLTAGE 3.3 [current_design]

@@ -35,6 +35,7 @@ use ieee.numeric_std.all;
 
 entity top is
     Port (
+       tio_trigger: out STD_LOGIC;
        A14: out STD_LOGIC;
        A12: in STD_LOGIC;
        pushbutton_n: in STD_LOGIC;  -- active 0 button
@@ -94,8 +95,14 @@ begin
     clk <= pll_clk1;
     reset <= not pushbutton_n_sync or por_rst;   -- synchronized button OR automatic power-on reset
     led1 <= pushbutton_n;
-    led2 <= xor ro_out;   -- RO smoke test: lit (dimly) while dip_switch(0) = '1'
+    led2 <= '0';
     led3 <= reset;
+    
+    -- RO 0, divided down for the 12 MHz logic analyzer on tio_trigger:
+    -- ro_out ~110-320 MHz / 256 -> ~0.4-1.3 MHz. f_RO = 2 * DIVIDE * f(tio_trigger)
+    u_ro_prescaler: entity work.ro_prescaler
+        generic map (DIVIDE => 256)
+        port map (clk_in => ro_out(0), clk_out => tio_trigger);
 
     A14 <= uart_tx;
 
