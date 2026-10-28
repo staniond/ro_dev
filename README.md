@@ -6,8 +6,6 @@ that never leaves the RO's own CLB and its switch matrix.
 The RO architecture is from Hesselbarth et al., *Large Scale RO PUF Analysis over Slice Type,
 Evaluation Time and Temperature on 28nm Xilinx FPGAs* (HOST 2018), Fig. 1 (`ro_architecture.png`).
 
-The project still contains the UART echo from the `uart_dev` template (see [UART](#uart) at the end).
-
 ## Quick start: reproduce the bitstream
 
 Needs Vivado 2025.1 with Artix-7 support.
@@ -23,8 +21,11 @@ bitstream (`ro_dev.runs/impl_1/top.bit`) is only written if all ROs are OK; the 
 ```
 gen_ro[0].u_ro   SLICE_X39Y100   CLBLM_L_X24Y100   OK
 ...
-ro_check: 4 RO(s), 0 with problems
+ro_check: <N> RO(s), 0 with problems
 ```
+
+A timing failure would not stop the bitstream (Vivado only gives a critical warning), so glance at
+WNS / WHS / TPWS of `impl_1` in the **Design Runs** window: none should be negative.
 
 After opening, `git status` may show `ro_dev.xpr` as modified: Vivado rewrites a few path entries
 (`ImportPath`). That's harmless.
@@ -59,7 +60,8 @@ how the flow works and how to inspect it; you don't need it to build.
 - The `sim` architecture (`sim_1/new/ro_cell_sim.vhd`) is the same circuit with `after` delays. The
   real `rtl` one has zero-delay LUTs in a loop, so a behavioral simulation would never advance time.
   `ro_cell_tb.vhd` checks that the RO is quiet when disabled, toggles when enabled, and clears when
-  `en` drops. In `top.vhd` the cell is instantiated explicitly as `entity work.ro_cell(rtl)`.
+  `en` drops. Because `sim_1` also contains the `sim` architecture, instantiate the cell in your design
+  with the architecture named explicitly: `entity work.ro_cell(rtl)`.
 
 ### The Vivado flow and where the scripts fit in
 
@@ -68,7 +70,7 @@ how the flow works and how to inspect it; you don't need it to build.
  synth_design ──> link_design ──> opt_design ──> place_design ──> route_design ──> write_bitstream
                        ▲
                        │  constrs_1, in this order:
-                       ├── cw305_main.xdc : pins, clock
+                       ├── cw305_main.xdc : board/design constraints (pins, clocks, I/O)
                        ├── ro_place.tcl   : LOC + BEL + LOCK_PINS -> RO cells placed & fixed
                        └── ro_routes.tcl  : FIXED_ROUTE           -> RO nets routed & fixed
                                                                       write_bitstream pre-hook:
@@ -80,7 +82,7 @@ how the flow works and how to inspect it; you don't need it to build.
 | `synth_design` | Turns the VHDL into a netlist: cells and their connections, with no location on the chip yet |
 | `link_design` (run step `init_design`) | Loads the netlist for the device and **applies the constraint files** |
 | `opt_design` | Logic cleanup: removes unused logic, propagates constants, merges/remaps LUTs. `DONT_TOUCH` keeps it away from the ROs |
-| `place_design` | Places **everything else** (UART etc.); the fixed RO cells are obstacles it never moves |
+| `place_design` | Places **everything else** (your logic); the fixed RO cells are obstacles it never moves |
 | `route_design` | Routes everything else; the fixed RO wires are never changed. It only adds the `ro_out` branch of `q` |
 | `write_bitstream` | First the pre-hook `scripts/ro_check_hook.tcl` (below), then final DRC (e.g. LUTLP-1), then writes `top.bit` |
 
@@ -89,12 +91,16 @@ constraint set `constrs_1`, marked *used in implementation* but not *used in syn
 they refer to only exist after synthesis). Vivado `source`s them, in the order listed in
 `constrs_1`, every time it links a synthesized netlist:
 
-| Action | Constraint files run? |
-|---|---|
-| Synthesis (`synth_1`) | no |
-| Implementation (`impl_1`): its first step, `link_design` (the log says `Sourcing Tcl File [.../ro_place.tcl]`) | **yes** |
-| **Open Synthesized Design** (`open_run synth_1`) | **yes** |
-| **Open Implemented Design** (`open_run impl_1`) | no: it loads the finished routed checkpoint, where placement and routes are already baked in |
+| Action                                                                                                         | Constraint files run?                                                                        |
+| -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| Synthesis (`synth_1`)                                                                                          | no                                                                                           |
+| Implementation (`impl_1`): its first step, `link_design` (the log says `Sourcing Tcl File [.../ro_place.tcl]`) | **yes**                                                                                      |
+| **Open Synthesized Design** (`open_run synth_1`)                                                               | **yes**                                                                                      |
+| **Open Implemented Design** (`open_run impl_1`)                                                                | no: it loads the finished routed checkpoint, where placement and routes are already baked in |
+
+This is also why **Open Synthesized Design** shows only the ROs placed. That's not a placement step:
+opening it runs `link_design`, which applies the constraints, and the ROs are the only cells with a
+location. The rest gets placed by `place_design` during implementation (`impl_1`).
 
 `scripts/ro_tools.tcl` is *not* a constraint file. You `source` it yourself in the Tcl Console,
 and the bitstream hook sources it too.
@@ -111,14 +117,13 @@ becomes a critical warning, and Vivado then skips the rest of that file. For exa
 `ro_routes.tcl` fails, the router routes the ROs its own way, and without the hook the bitstream
 would still be written. Unlike in a constraint file, an `error` in a hook does stop the run step.
 
-This is also why **Open Synthesized Design** shows only the ROs placed. That's not a placement step:
-opening it runs `link_design`, which applies the constraints, and the ROs are the only cells with a
-location. The rest gets placed by `place_design` during implementation (`impl_1`).
-
 ### `ro_dev.srcs/constrs_1/new/ro_place.tcl` (constraint, you edit it)
 
-- `RO_PLACEMENT`: the list you maintain, **instance name -> slice**. Instance names come from the
-  generate in `top.vhd` (`gen_ro: for i ... generate` / `u_ro:` -> `gen_ro[i].u_ro`).
+- `RO_PLACEMENT`: the list you maintain, **instance name -> slice**. Instance names are the full
+  hierarchical netlist names of your `ro_cell` instances. The examples in this README use
+  `gen_ro[i].u_ro`, which is what `gen_ro: for i ... generate` with an instance labelled `u_ro:` in the
+  top level gives. If the ROs sit deeper in the hierarchy, the name includes the path
+  (e.g. `u_puf/gen_ro[0].u_ro`).
 - `RO_BELS`: which cell goes to which BEL (position inside the slice), and `LOCK_PINS`, which fixes
   the physical LUT input pin for each logical input. Vivado could otherwise swap LUT pins per
   instance, and then the routes would differ.
@@ -194,14 +199,23 @@ construction.
 `report_drc` shows 3 warnings per RO. They are **warnings, not errors**: they don't block the
 bitstream, and here they describe exactly what was built on purpose.
 
-| Rule | Meaning | Why it's fine here |
-|---|---|---|
-| LUTLP-2 Combinatorial Loop Allowed | A LUT loop exists and is allowed | The allowed version of the LUTLP-1 error; it's the ring |
-| PDRC-153 Gated clock | A FF is clocked by a LUT, not a clock buffer | The toggle FF is clocked by the ring |
-| PLHOLDVIO-2 Possible hold violations | A clock comes from general routing, not the clock tree | Timing analysis doesn't apply to an RO |
+| Rule                                 | Meaning                                                | Why it's fine here                                                           |
+| ------------------------------------ | ------------------------------------------------------ | ---------------------------------------------------------------------------- |
+| LUTLP-2 Combinatorial Loop Allowed   | A LUT loop exists and is allowed                       | The allowed version of the LUTLP-1 error; it's the ring                      |
+| PDRC-153 Gated clock                 | A FF is clocked by a LUT, not a clock buffer           | The toggle FF is clocked by the ring                                         |
+| PLHOLDVIO-2 Possible hold violations | A clock comes from general routing, not the clock tree | The FF's hold is still checked against its `ro_clk_*` clock (slack ~0.21 ns) |
 
 In a normal synchronous design each of these would be a bug, so check that they only point at
 `gen_ro[*].u_ro` cells and nets.
+
+What the ROs contribute to the other reports (anything else in them comes from the rest of your
+design):
+
+| Report | From the ROs |
+|---|---|
+| `report_methodology` | 2 checks waived per RO (TIMING-2, TIMING-14: the RO clocks), and one TIMING-23 *Combinational loop found* warning per RO (the ring) |
+| `check_timing` | `loops`: one per RO (the ring). `no_clock` must be 0 |
+| Timing summary | one `ro_clk_*` clock per RO, each with setup slack ~0.61 ns, hold ~0.21 ns, pulse width 0.25 ns |
 
 ## Walkthrough: the flow step by step
 
@@ -247,7 +261,8 @@ select_objects [get_cells {gen_ro[0].u_ro/*}]              ;# see them in the De
 ```
 
 **4. (Re)generate the routes.** `ro_routes.tcl` is in the repo, so this step is only needed after
-changing `RO_BELS` or `LOCK_PINS`. Running it again does no harm; the result is deterministic.
+changing `RO_BELS` or `LOCK_PINS`. Running it again does no harm: the routes come out the same,
+only the date in the file's header changes.
 
 ```tcl
 source scripts/ro_tools.tcl
@@ -268,7 +283,11 @@ close_design
 set_property is_enabled true [get_files ro_routes.tcl]
 ```
 
-If `ro_routes.tcl` ever ends up before `ro_place.tcl`:
+The file order is stored in `ro_dev.xpr` and is already correct; it only changes if you rearrange
+the constraint files (reorder them, or remove one and add it back, which puts it at the end). If
+`ro_routes.tcl` ever ends up before `ro_place.tcl`, it finds no placed RO and silently fixes
+nothing; the bitstream hook then stops the build with `ro_check ... with problems`. To fix the
+order:
 
 ```tcl
 reorder_files -fileset constrs_1 -after [get_files ro_place.tcl] [get_files ro_routes.tcl]
@@ -295,8 +314,7 @@ get_property ROUTE [get_nets {gen_ro[1].u_ro/ring2}]
 select_objects [get_nets {gen_ro[0].u_ro/*}]      ;# zoom in: wires stay in one CLB + switch matrix
 ```
 
-The bitstream is `ro_dev.runs/impl_1/top.bit`. On the board, `dip_switch(0)` enables all ROs and
-`led2` shows the XOR of their outputs (lit dimly while they run).
+The bitstream is `ro_dev.runs/impl_1/top.bit`.
 
 ## Adding more ROs
 
@@ -312,11 +330,8 @@ llength [ro_sites]                    ;# 2400 on the whole device
 Use only sites from `ro_sites`, i.e. the same RO type. Any other slice won't fit the routes;
 `ro_place.tcl` rejects it (see above).
 
-**2. Instantiate them.** In `top.vhd`, raise `N_RO`:
-
-```vhdl
-constant N_RO : integer := 16;
-```
+**2. Instantiate them** in your RTL as `entity work.ro_cell(rtl)`, e.g. by raising the count of the
+generate loop that creates them.
 
 **3. Place them.** In `ro_place.tcl`, add one line per RO to `RO_PLACEMENT`:
 
@@ -342,19 +357,11 @@ foreach site [ro_sites X0Y2] {
 
 **4. Rebuild:** just *Generate Bitstream*. `ro_routes.tcl` stays valid because it is applied to every
 `ro_cell` automatically, so step 4 of the walkthrough isn't needed. The bitstream hook runs `ro_check`;
-check in the run log that it reports `N_RO` ROs, all `OK`.
+check in the run log that it reports as many ROs as you instantiated, all `OK`.
 
 If the bitstream step fails, look at **Critical Warnings** (Messages tab) and the `ro_check` table
 in the run log. `[RO 1-1]` / `[RO 1-2]` means a RO was not placed (wrong site, duplicate, missing
 `RO_PLACEMENT` entry, or renamed instance).
-
-## UART
-
-The UART echo from the template is still in `top.vhd`. Connect the UART and run:
-`picocom -b 115200 --omap crlf --imap lfcrlf /dev/ttyUSB0`
-
-- --omap crlf: Enter sends LF, which is the byte the FSM uses as end of line.
-- --imap lfcrlf: the LF the FPGA sends is displayed as CR+LF, so each echoed line starts at column 0.
 
 ## RO timing: ring period and the clock constraint
 
@@ -508,3 +515,12 @@ report_pulse_width -clocks [get_clocks ro_clk_gen_ro_0_u_ro]
 
 So the toggle FF can follow the ring even at its fastest corner. The FF itself could toggle at up
 to 1 GHz. The full picture for all ROs is in `report_timing_summary` (one `ro_clk_*` per RO).
+
+
+## UART
+
+The UART echo from the template is still in `top.vhd`. Connect the UART and run:
+`picocom -b 115200 --omap crlf --imap lfcrlf /dev/ttyUSB0`
+
+- --omap crlf: Enter sends LF, which is the byte the FSM uses as end of line.
+- --imap lfcrlf: the LF the FPGA sends is displayed as CR+LF, so each echoed line starts at column 0.

@@ -5,7 +5,7 @@
 # to (gen_ro[i].u_ro/lut_nand, ...) only exist after synthesis.
 #
 # RO type: the SLICEL of a CLBLM_L tile (2400 sites on xc7a100t). All ROs must
-# be of the SAME type, otherwise the captured routes in ro_routes.tcl don't fit.
+# be of the SAME type, otherwise the routes in ro_routes.tcl don't fit.
 # List legal sites with:   source scripts/ro_tools.tcl ; ro_sites X0Y2
 # ============================================================================
 
