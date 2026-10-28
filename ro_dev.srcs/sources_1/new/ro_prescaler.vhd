@@ -13,6 +13,9 @@
 --   counter to meet timing at RO speed. DIVIDE must be a power of two (each
 --   stage divides by 2).
 --
+--   taps(i) is the output of stage i (clk_in / 2^(i+1)), so a mux after the
+--   prescaler can pick the division at run time. clk_out = taps(last).
+--
 --   Timing: every stage output is used as a clock, so it needs a generated
 --   clock; constrs_1/new/ro_prescaler.tcl creates them for every instance.
 --   The stage outputs are not synchronous to anything else and the phase is
@@ -22,29 +25,21 @@
 library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 
+use work.ro_pkg.all;
+
 entity ro_prescaler is
     Generic (
         DIVIDE : positive := 256      -- division factor, power of two >= 2
     );
     Port (
         clk_in  : in  STD_LOGIC;      -- signal to divide (e.g. ro_out of a ro_cell)
-        clk_out : out STD_LOGIC       -- clk_in / DIVIDE, 50 % duty cycle
+        clk_out : out STD_LOGIC;      -- clk_in / DIVIDE, 50 % duty cycle
+        taps    : out STD_LOGIC_VECTOR(log2(DIVIDE)-1 downto 0)  -- taps(i) = clk_in / 2^(i+1)
     );
 end ro_prescaler;
 
 architecture rtl of ro_prescaler is
-    -- number of /2 stages: STAGES = log2(DIVIDE)
-    function log2(n : positive) return natural is
-        variable v : positive := n;
-        variable r : natural  := 0;
-    begin
-        while v > 1 loop
-            v := v / 2;
-            r := r + 1;
-        end loop;
-        return r;
-    end function;
-
+    -- number of /2 stages (log2 from ro_pkg)
     constant STAGES : natural := log2(DIVIDE);
 
     -- DIVIDE must be a power of two >= 2. If it isn't, this constant gets the
@@ -72,5 +67,6 @@ begin
     end generate;
 
     clk_out <= stage(STAGES-1);
+    taps    <= stage;
 
 end rtl;

@@ -58,3 +58,6 @@ hs_err_pid*.log
 
 # Licensed IEEE copy of the reference paper (cited in README.md) - keep local only
 Large_scale_RO_PUF_analysis_over_slice_type_evaluation_time_and_temperature_on_28nm_Xilinx_FPGAs.pdf
+
+# Python bytecode (scripts/)
+__pycache__/

@@ -23,6 +23,8 @@ library IEEE;
 use IEEE.STD_LOGIC_1164.ALL;
 use ieee.numeric_std.all;
 
+use work.ro_pkg.all;
+
 -- Uncomment the following library declaration if using
 -- arithmetic functions with Signed or Unsigned values
 --use IEEE.NUMERIC_STD.ALL;
@@ -50,14 +52,20 @@ end top;
 architecture Behavioral of top is
     constant CLK_FREQ  : integer := 100_000_000; -- pll_clk1 = 100 MHz 
     constant BAUD_RATE : integer := 115200;
-    
-    
-    constant BUFFER_SIZE: integer := 10;
 
     -- Ring oscillators (placement: constrs_1/new/ro_place.tcl)
-    constant N_RO : integer := 4;
+    constant N_RO : integer := 256;
     signal ro_out : std_logic_vector(N_RO-1 downto 0);
-    
+    signal ro_en  : std_logic_vector(N_RO-1 downto 0);  -- one-hot from ro_ctrl
+
+    -- Output path: selected RO -> prescaler -> tap chosen over UART -> tio_trigger
+    constant PRESCALER_DIVIDE : integer := 256;          -- 8 stages
+    constant MAX_STAGES       : integer := log2(PRESCALER_DIVIDE);
+    signal ro_sel_out : std_logic;                       -- ro_out of the enabled RO
+    signal ro_taps    : std_logic_vector(MAX_STAGES-1 downto 0);
+    signal ro_running : std_logic;
+    signal ro_stages  : natural range 0 to MAX_STAGES;
+
     signal clk: std_logic;
     signal reset : std_logic;
     signal uart_tx: std_logic;
@@ -73,36 +81,20 @@ architecture Behavioral of top is
     constant POR_MAX : unsigned(por_cnt'range) := (others => '1');
     
     -- Internal signals for UART FIFO connection
-    signal tx_ena        : std_logic := '0';
-    signal tx_data       : std_logic_vector(7 downto 0) := (others => '0');
+    signal tx_ena        : std_logic;
+    signal tx_data       : std_logic_vector(7 downto 0);
     signal tx_fifo_full  : std_logic;
     
     signal rx_data       : std_logic_vector(7 downto 0);
-    signal rx_data_read  : std_logic := '0';
+    signal rx_data_read  : std_logic;
     signal rx_data_ready : std_logic;
-
-    -- FSM Signals
-    type t_state is (RECEIVING, SEND_BYTES);
-    signal state : t_state := RECEIVING;
-    
-    type t_byte_array is array (0 to BUFFER_SIZE-1) of std_logic_vector(7 downto 0);
-    signal data_buffer : t_byte_array;
-    
-    signal recv_index : integer range 0 to BUFFER_SIZE := 0;
-    signal send_index : integer range 0 to BUFFER_SIZE := 0;
 
 begin
     clk <= pll_clk1;
     reset <= not pushbutton_n_sync or por_rst;   -- synchronized button OR automatic power-on reset
-    led1 <= pushbutton_n;
-    led2 <= '0';
+    led1 <= '0';
+    led2 <= ro_running;
     led3 <= reset;
-    
-    -- RO 0, divided down for the 12 MHz logic analyzer on tio_trigger:
-    -- ro_out ~110-320 MHz / 256 -> ~0.4-1.3 MHz. f_RO = 2 * DIVIDE * f(tio_trigger)
-    u_ro_prescaler: entity work.ro_prescaler
-        generic map (DIVIDE => 256)
-        port map (clk_in => ro_out(0), clk_out => tio_trigger);
 
     A14 <= uart_tx;
 
@@ -126,70 +118,55 @@ begin
         end if;
     end process;
 
-    -- Combinational FIFO read strobe: pop in the SAME cycle we capture the byte,
-    -- so the FIFO advances on the same clock edge and its data/flags are coherent
-    -- on the next cycle. This is what lets us drop the old RECV_PAUSE bubble state.
-    rx_data_read <= '1' when (state = RECEIVING and rx_data_ready = '1') else '0';
+    -- UART commands: [stages] [id_hi] [id_lo], see ro_ctrl.vhd / README.
+    -- Enables one RO at a time and selects the prescaler tap for tio_trigger.
+    u_ro_ctrl: entity work.ro_ctrl
+        generic map (
+            N_RO           => N_RO,
+            MAX_STAGES     => MAX_STAGES,
+            TIMEOUT_CYCLES => CLK_FREQ / 100              -- 10 ms between bytes
+        )
+        port map (
+            clk           => clk,
+            reset         => reset,
+            rx_data       => rx_data,
+            rx_data_ready => rx_data_ready,
+            rx_data_read  => rx_data_read,
+            tx_ena        => tx_ena,
+            tx_data       => tx_data,
+            tx_fifo_full  => tx_fifo_full,
+            en            => ro_en,
+            running       => ro_running,
+            stages        => ro_stages
+        );
 
-    -- FSM Process
-    p_FSM: process(clk)
-    begin
-        if rising_edge(clk) then
-            if reset = '1' then
-                state <= RECEIVING;
-                recv_index <= 0;
-                send_index <= 0;
-                tx_ena <= '0';
-            else
-                -- Default assignment
-                tx_ena <= '0';
-
-                case state is
-                    when RECEIVING =>
-                        if rx_data_ready = '1' then
-                            -- Head word is already on rx_data (FWFT FIFO); capture it.
-                            data_buffer(recv_index) <= rx_data;
-
-                            -- Decide from rx_data directly: the buffer write above
-                            -- has not committed yet this cycle.
-                            if rx_data = x"0a" then
-                                -- newline: strip it (don't count it), echo what we have
-                                send_index <= 0;
-                                state      <= SEND_BYTES;
-                            elsif recv_index = BUFFER_SIZE - 1 then
-                                -- this byte fills the buffer: overflow, echo everything
-                                recv_index <= recv_index + 1;
-                                send_index <= 0;
-                                state      <= SEND_BYTES;
-                            else
-                                recv_index <= recv_index + 1;
-                            end if;
-                        end if;
-                    -- 4. Process and Send Byte
-                    when SEND_BYTES =>
-                        tx_ena <= '1';
-                        send_index <= send_index + 1;
-                        if send_index = recv_index then
-                            tx_data <= x"0a";
-                            send_index <= 0;
-                            recv_index <= 0;
-                            state <= RECEIVING;
-                        else
-                            tx_data <= data_buffer(send_index);
-                            state <= SEND_BYTES;
-                        end if;
-                end case;
-            end if;
-        end if;
-    end process;
-
-
-    -- Ring oscillators, all enabled by dip_switch(0). Each instance is named
-    -- gen_ro[i].u_ro in the netlist; ro_place.tcl maps those names to slices.
+    -- Ring oscillators. Each instance is named gen_ro[i].u_ro in the netlist;
+    -- ro_place.tcl maps those names to slices.
     gen_ro: for i in 0 to N_RO-1 generate
         u_ro: entity work.ro_cell(rtl)
-            port map (en => dip_switch(0), ro_out => ro_out(i));
+            port map (en => ro_en(i), ro_out => ro_out(i));
     end generate;
+
+    -- Output of the enabled RO (OR of all: stopped ROs output '0')
+    u_ro_select: entity work.ro_select
+        generic map (N => N_RO)
+        port map (ro_out => ro_out, sel_out => ro_sel_out);
+
+    -- Divided versions: ro_taps(k-1) = ro_sel_out / 2^k
+    u_ro_prescaler: entity work.ro_prescaler
+        generic map (DIVIDE => PRESCALER_DIVIDE)
+        port map (clk_in => ro_sel_out, clk_out => open, taps => ro_taps);
+
+    -- tio_trigger = ro_sel_out / 2^stages. For the 12 MHz logic analyzer use
+    -- ~7-8 stages (ro_out ~110-320 MHz). f_RO = 2 * 2^stages * f(tio_trigger)
+    p_tio: process(ro_stages, ro_sel_out, ro_taps)
+    begin
+        if ro_stages = 0 then
+            tio_trigger <= ro_sel_out;
+        else
+            tio_trigger <= ro_taps(ro_stages-1);
+        end if;
+    end process;
 
     -- UART FIFO Instantiation
     uart_fifo_inst: entity work.uart_fifo(Behavioral)
@@ -197,7 +174,7 @@ begin
         clk_freq      => CLK_FREQ,
         baud_rate     => BAUD_RATE,
         os_rate       => 8, -- needed for 12MHz for lower oversampling error, works for 100MHz fine too
-        tx_fifo_depth => BUFFER_SIZE+1, -- +1 for newline appended in SEND_BYTES state
+        tx_fifo_depth => 4, -- one 3-byte reply
         rx_fifo_depth => 4
     )
     port map(

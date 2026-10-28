@@ -5,6 +5,8 @@
 #   source scripts/ro_tools.tcl
 #
 #   ro_sites ?clock_region?        list legal RO sites (any open design)
+#   ro_placement_list count ?clock_region? ?step?
+#                                  print RO_PLACEMENT lines for many ROs
 #   ro_make_routes ?inst?          compute local routes for one placed RO and
 #                                  write constrs_1/new/ro_routes.tcl
 #   ro_check                       per RO: routed, fixed, local, identical?
@@ -25,6 +27,21 @@ proc ro_sites {{clock_region *}} {
                    -filter "SITE_TYPE == SLICEL && CLOCK_REGION =~ $clock_region"]
     # get_property NAME gives a plain Tcl list (collections >500 can't be printed)
     return [lsort -dictionary [get_property NAME $sites]]
+}
+
+# Print RO_PLACEMENT lines for `count` ROs named gen_ro[i].u_ro (or $pattern,
+# with %d for the index), on every `step`-th legal site of a clock region.
+# Paste the output into RO_PLACEMENT in ro_place.tcl. Example:
+#   ro_placement_list 64 X0Y2 2
+proc ro_placement_list {count {clock_region *} {step 1} {pattern {gen_ro[%d].u_ro}}} {
+    set sites [ro_sites $clock_region]
+    set avail [expr {([llength $sites] + $step - 1) / $step}]
+    if {$count > $avail} {
+        error "only $avail sites with step $step in clock region $clock_region, need $count"
+    }
+    for {set i 0} {$i < $count} {incr i} {
+        puts [format "    %-20s %s" [format $pattern $i] [lindex $sites [expr {$i * $step}]]]
+    }
 }
 
 # Site pins of $net inside $site: driver first, then the loads.

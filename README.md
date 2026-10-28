@@ -73,7 +73,7 @@ how the flow works and how to inspect it; you don't need it to build.
                        ├── cw305_main.xdc : board/design constraints (pins, clocks, I/O)
                        ├── ro_place.tcl   : LOC + BEL + LOCK_PINS -> RO cells placed & fixed
                        ├── ro_routes.tcl  : FIXED_ROUTE           -> RO nets routed & fixed
-                       └── ro_prescaler.tcl : clocks for ro_prescaler stages (only if you use one)
+                       └── ro_prescaler.tcl : clocks for ro_prescaler stages
                                                                       write_bitstream pre-hook:
                                                                       ro_check_hook.tcl -> no OK, no bitstream
 ```
@@ -138,6 +138,16 @@ would still be written. Unlike in a constraint file, an `error` in a hook does s
 - Clocks starting at a LUT trigger `report_methodology` critical warnings TIMING-2 (clock on a
   non-clock pin) and TIMING-14 (LUT on the clock tree). For a RO that is the design, so each RO gets
   a waiver (`create_waiver`) for exactly those objects; the report lists them under *Checks waived*.
+- The RO's `en` comes from control logic in another clock domain and clears the toggle FF
+  asynchronously. Starting or stopping a RO at an arbitrary moment is harmless, so that path is cut
+  (`set_false_path -to <inst>/ff/CLR`), and two more waivers record that it's intended: CDC-7 in
+  `report_cdc` (asynchronous reset without synchronizer) and TIMING-4 in `report_methodology` (the
+  check traces *through* the enable flip-flop and sees the ring clock "downstream" of the control
+  clock; the ring runs on its own). Constraints use the leaf names inside `ro_cell` only: synthesis
+  renames hierarchical ports (the RO's `en` port became `Q[0]`).
+- For every `ro_select` instance (see [below](#selecting-and-measuring-one-ro-ro_select-ro_ctrl))
+  it declares the clock of the selected RO's output on `<inst>/u_root/O`, period
+  2 x `RO_CLK_PERIOD` (`ro_out` is half the ring), with the same kind of waivers.
 - It **checks every entry first**: the site must exist and be the RO type (below), no site may be used
   twice, the instance must exist, and every `ro_cell` must have an entry. A bad entry is reported as
   `CRITICAL WARNING: [RO 1-1] ro_place.tcl: gen_ro[2].u_ro NOT placed: SLICE_X38Y104 is a SLICEM in a
@@ -188,6 +198,7 @@ ROs that `ro_place.tcl` rejected (no `LOC`) are skipped.
 | Command                 | What it does                                                                                                                                                                                                                                        | Needs                             |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
 | `ro_sites ?region?`     | Lists legal RO sites (CLBLM_L SLICELs), optionally only in one clock region, e.g. `ro_sites X0Y2`                                                                                                                                                   | any open design                   |
+| `ro_placement_list count ?region? ?step?` | Prints `RO_PLACEMENT` lines (`gen_ro[i].u_ro SITE`) for `count` ROs from `ro_sites`, every `step`-th site. Paste them into `ro_place.tcl` | any open design |
 | `ro_make_routes ?inst?` | Writes `ro_routes.tcl`.<br>For one placed RO (default: the first), searches the routing graph using only the RO's CLB tile and its switch-matrix (INT) tile, net by net (ring nets first), without sharing wires and without passing through a LUT. | synthesized or implemented design |
 | `ro_check`              | For every RO and net: routed? fixed? Does the path from driver to each load inside the slice stay in the CLB + INT tile? Same wires as the first RO? Prints `OK` per RO.                                                                            | implemented design                |
 
@@ -214,9 +225,11 @@ design):
 
 | Report | From the ROs |
 |---|---|
-| `report_methodology` | 2 checks waived per RO (TIMING-2, TIMING-14: the RO clocks), and one TIMING-23 *Combinational loop found* warning per RO (the ring) |
+| `report_drc` | 3 warnings per RO (above), plus one PDRC-153 and one PLHOLDVIO-2 for `ro_select`'s root LUT clocking the prescaler |
+| `report_methodology` | 4 checks waived per RO (TIMING-2, TIMING-14, TIMING-4, plus the CDC-7 waiver in `report_cdc`) and 3 for `ro_select`. Left as warnings: one TIMING-23 *Combinational loop found* per RO (the ring), and one TIMING-9 *Unknown CDC Logic* (the RO enables; it carries no objects a waiver could be limited to) |
+| `report_cdc` | nothing from the ROs (the enable crossings are waived) |
 | `check_timing` | `loops`: one per RO (the ring). `no_clock` must be 0 |
-| Timing summary | one `ro_clk_*` clock per RO, each with setup slack ~0.61 ns, hold ~0.21 ns, pulse width 0.25 ns |
+| Timing summary | one `ro_clk_*` clock per RO (setup slack ~0.61 ns, hold ~0.21 ns, pulse width 0.25 ns), `u_ro_select_clk` and the prescaler `div*` clocks, all met |
 
 ### `ro_prescaler` (optional): divide a RO output for slow equipment
 
@@ -226,10 +239,12 @@ design):
 ```vhdl
 u_ro_prescaler: entity work.ro_prescaler
     generic map (DIVIDE => 256)                         -- power of two >= 2
-    port map (clk_in => ro_out(0), clk_out => some_pin);
+    port map (clk_in => ro_out(0), clk_out => some_pin, taps => open);
 ```
 
 The RO frequency is then `f_RO = 2 x DIVIDE x f(pin)` (the RO's toggle FF already divides by 2).
+`taps(i)` is the output of stage i (`clk_in / 2^(i+1)`), so a mux can pick the division at run
+time (that's how `top.vhd` uses it). `log2` for the port width comes from `ro_pkg.vhd`.
 
 - It's a **ripple divider**: `log2(DIVIDE)` toggle flip-flops, each clocked by the previous one's
   output. Only the first runs at RO speed (~100-350 MHz at `ro_out`), so there's no wide counter
@@ -247,6 +262,56 @@ The RO frequency is then `f_RO = 2 x DIVIDE x f(pin)` (the RO's toggle FF alread
   `gen_stage[i].stage_reg[i]` from the VHDL.
 - The output toggles asynchronously to everything else; if it goes to a pin, cut that pin from
   timing (`set_false_path -to [get_ports ...]`).
+
+### Selecting and measuring one RO: `ro_select`, `ro_ctrl`
+
+The current `top.vhd` runs **one RO at a time**, chosen over the UART, and puts its output, divided
+by a selectable power of two, on `tio_trigger` (FPGA pin T14, pin 16 of the 20-pin connector):
+
+```
+UART -> ro_ctrl -> en (one-hot) -> gen_ro[i].u_ro -> ro_out(i) -> ro_select (OR of all)
+     -> ro_prescaler (8 stages, taps) -> mux by `stages` -> tio_trigger
+```
+
+- **`ro_ctrl.vhd`** parses the commands and drives one `en` per RO. All enables are decoded from a
+  single stored RO id (`en(i) = running and sel = i`), so **at most one RO is ever enabled**.
+  Switching to another RO first turns all ROs off for 16 clocks (160 ns, break-before-make), so the
+  old ring has stopped before the new one starts. The stored id has `MAX_FANOUT 32`, so synthesis
+  builds the decode as a small tree instead of one net per id bit driving every RO's decoder. The
+  timed path (id -> decode -> `en` flip-flop) stays short; the long wire from `en` to the RO isn't
+  timed (false path to the RO's toggle-FF clear). With 256 ROs this path takes 5.5 ns (slack
+  4.1 ns); without `MAX_FANOUT`, 8.1 ns (slack 1.7 ns).
+- **`ro_select.vhd`** ORs all `ro_out`: a stopped RO outputs '0', so the OR is the enabled RO's
+  output. No select lines have to reach thousands of inputs. It ends in the buffer LUT `u_root`,
+  where `ro_place.tcl` declares the clock of this path.
+- `ro_ctrl_tb.vhd` (sim_1) checks the protocol, break-before-make and, on every clock, that at
+  most one `en` bit is '1'.
+
+#### UART protocol (115200 8N1)
+
+| Byte | Command |
+|---|---|
+| 0 | prescaler stages `0..8` (0 = RO output directly, 8 = /256), or `0xFF` = stop (all ROs off) |
+| 1, 2 | RO id, big-endian (high byte first); ignored for stop |
+
+The board replies after the command took effect: the same 3 bytes if it was valid, or
+`0xEE id_hi id_lo` if it was rejected (stages not 0..8/0xFF, or id >= number of ROs) and nothing
+changed. A partial command is dropped if the next byte doesn't arrive within 10 ms. After reset all
+ROs are off. `led2` is on while a RO runs.
+
+```
+f_RO = 2 x 2^stages x f(tio_trigger)
+```
+
+(the RO's toggle FF divides by 2, the prescaler by 2^stages). For a 12 MHz logic analyzer use 7-8
+stages: `ro_out` is ~110-320 MHz, so 8 stages give ~0.4-1.3 MHz on the pin.
+
+From the PC (needs `pip install pyserial`):
+
+```
+python3 scripts/ro_uart.py /dev/ttyUSB0 --ro 3 --stages 8    # run RO 3, /256
+python3 scripts/ro_uart.py /dev/ttyUSB0 --stop               # all ROs off
+```
 
 ## Walkthrough: the flow step by step
 
@@ -361,8 +426,8 @@ llength [ro_sites]                    ;# 2400 on the whole device
 Use only sites from `ro_sites`, i.e. the same RO type. Any other slice won't fit the routes;
 `ro_place.tcl` rejects it (see above).
 
-**2. Instantiate them** in your RTL as `entity work.ro_cell(rtl)`, e.g. by raising the count of the
-generate loop that creates them.
+**2. Instantiate them** in your RTL as `entity work.ro_cell(rtl)`. In the current `top.vhd` that's
+just `constant N_RO`; `ro_ctrl` and `ro_select` take the count as a generic.
 
 **3. Place them.** In `ro_place.tcl`, add one line per RO to `RO_PLACEMENT`:
 
@@ -375,16 +440,17 @@ set RO_PLACEMENT {
 }
 ```
 
-For many ROs, generate the list instead of typing it. For example, every second site of a region
+For many ROs, generate the list instead of typing it, with `ro_placement_list count ?region? ?step?`
 (paste the output into `RO_PLACEMENT`):
 
 ```tcl
-set i 0
-foreach site [ro_sites X0Y2] {
-    if {$i % 2 == 0} { puts "    gen_ro\[[expr {$i / 2}]\].u_ro  $site" }
-    incr i
-}
+ro_placement_list 256 X0Y2       ;# 256 ROs on consecutive sites of clock region X0Y2
+ro_placement_list 64 X0Y2 2      ;# 64 ROs on every second site
+ro_placement_list 2400           ;# every legal site on the device
 ```
+
+It stops with an error if the region has too few sites. Tested: 256 ROs build with all ROs `OK`
+and timing met.
 
 **4. Rebuild:** just *Generate Bitstream*. `ro_routes.tcl` stays valid because it is applied to every
 `ro_cell` automatically, so step 4 of the walkthrough isn't needed. The bitstream hook runs `ro_check`;
@@ -546,12 +612,3 @@ report_pulse_width -clocks [get_clocks ro_clk_gen_ro_0_u_ro]
 
 So the toggle FF can follow the ring even at its fastest corner. The FF itself could toggle at up
 to 1 GHz. The full picture for all ROs is in `report_timing_summary` (one `ro_clk_*` per RO).
-
-
-## UART
-
-The UART echo from the template is still in `top.vhd`. Connect the UART and run:
-`picocom -b 115200 --omap crlf --imap lfcrlf /dev/ttyUSB0`
-
-- --omap crlf: Enter sends LF, which is the byte the FSM uses as end of line.
-- --imap lfcrlf: the LF the FPGA sends is displayed as CR+LF, so each echoed line starts at column 0.
