@@ -4,10 +4,23 @@
 # Used in IMPLEMENTATION only (used_in_synthesis = false): the cells it refers
 # to (gen_ro[i].u_ro/lut_nand, ...) only exist after synthesis.
 #
-# RO type: the SLICEL of a CLBLM_L tile (2400 sites on xc7a100t). All ROs must
-# be of the SAME type, otherwise the routes in ro_routes.tcl don't fit.
+# RO type (RO_TILE_TYPE/RO_SITE_TYPE, currently the SLICEL of a CLBLM_L tile)
+# is defined in scripts/ro_tools.tcl, which this file sources. All ROs must be
+# of the SAME type, otherwise the routes in ro_routes.tcl don't fit.
 # List legal sites with:   source scripts/ro_tools.tcl ; ro_sites X0Y2
 # ============================================================================
+
+# Shared definitions (RO type) and helpers: scripts/ro_tools.tcl, found
+# relative to this file (ro_dev.srcs/constrs_1/new/ -> project dir). Inside an
+# implementation run, [info script] points into the run directory, so the path
+# of this file is taken from the project's file list (read_xdc registers it).
+set ro_place_file [lindex [get_files -quiet -all *ro_place.tcl] 0]
+if {$ro_place_file eq ""} { set ro_place_file [file normalize [info script]] }
+set ro_tools_file [file normalize [file join [file dirname $ro_place_file] .. .. .. scripts ro_tools.tcl]]
+if {[catch {source $ro_tools_file} err]} {
+    send_msg_id {RO 1-3} {CRITICAL WARNING} "ro_place.tcl: can't load $ro_tools_file ($err); no RO is placed"
+    return
+}
 
 # Instance -> slice. Instance names are the netlist names of the ro_cell
 # instances (gen_ro: for i ... generate / u_ro: in top.vhd -> gen_ro[i].u_ro).
@@ -289,12 +302,9 @@ set RO_BELS {
     ff        DFF    {}
 }
 
-# The RO type: ro_routes.tcl names wires of this tile/slice type only. A RO
-# anywhere else can't get its routes (route_design fails with a cryptic
-# message, or worse, the router quietly routes it its own way).
-set RO_TILE_TYPE CLBLM_L
-set RO_SITE_TYPE SLICEL
-
+# A RO on a site of another type can't get its routes (route_design fails with
+# a cryptic message, or worse, the router quietly routes it its own way), so
+# every site is checked against the RO type from ro_tools.tcl first.
 # Why $site can't hold a RO, or "" if it can.
 proc ro_site_problem {site} {
     global RO_TILE_TYPE RO_SITE_TYPE
@@ -370,15 +380,37 @@ proc ro_place {inst site} {
 # but write_bitstream stops with DRC LUTLP-1, so a misplaced RO can never
 # end up in a bitstream. (An `error` here would only skip the rest of this
 # file with a critical warning.)
-set ro_used_sites [dict create]
+# Why instance $inst can't be placed (all its RO_BELS cells must exist), or "".
+# Checked up front: a missing cell would otherwise raise a Tcl error inside
+# ro_place, and Vivado would skip the rest of this file.
+proc ro_cell_problem {inst} {
+    global RO_BELS
+    set missing {}
+    foreach {cell bel pins} $RO_BELS {
+        if {[llength [get_cells -quiet $inst/$cell]] == 0} { lappend missing $cell }
+    }
+    if {[llength $missing] == [llength $RO_BELS] / 3} {
+        return "no such ro_cell instance in the design"
+    } elseif {[llength $missing]} {
+        return "cells missing in this ro_cell: [join $missing {, }] (renamed in ro_cell.vhd?)"
+    }
+    return ""
+}
+
+set ro_used_sites [dict create]   ;# site -> instance
+set ro_listed     [dict create]   ;# instance -> site (dict: one lookup per RO)
 foreach {inst site} $RO_PLACEMENT {
+    if {[dict exists $ro_listed $inst]} {
+        send_msg_id {RO 1-1} {CRITICAL WARNING} "ro_place.tcl: $inst is listed twice in RO_PLACEMENT:\
+            entry $site ignored, the first entry ([dict get $ro_listed $inst]) applies"
+        continue
+    }
+    dict set ro_listed $inst $site
     set problem [ro_site_problem $site]
     if {$problem eq "" && [dict exists $ro_used_sites $site]} {
         set problem "$site is already used by [dict get $ro_used_sites $site]"
     }
-    if {$problem eq "" && [llength [get_cells -quiet $inst/ff]] == 0} {
-        set problem "no such ro_cell instance in the design"
-    }
+    if {$problem eq ""} { set problem [ro_cell_problem $inst] }
     if {$problem ne ""} {
         send_msg_id {RO 1-1} {CRITICAL WARNING} "ro_place.tcl: $inst NOT placed: $problem"
         continue
@@ -389,7 +421,7 @@ foreach {inst site} $RO_PLACEMENT {
 
 # Every ro_cell must be in RO_PLACEMENT: an unplaced one would get random placement/routing.
 foreach inst [get_cells -hierarchical -quiet -filter {ORIG_REF_NAME == ro_cell || REF_NAME == ro_cell}] {
-    if {[lsearch -exact $RO_PLACEMENT $inst] < 0} {
+    if {![dict exists $ro_listed $inst]} {
         send_msg_id {RO 1-2} {CRITICAL WARNING} "ro_place.tcl: $inst NOT placed: no entry in RO_PLACEMENT"
     }
 }

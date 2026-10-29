@@ -149,7 +149,8 @@ would still be written. Unlike in a constraint file, an `error` in a hook does s
   it declares the clock of the selected RO's output on `<inst>/u_root/O`, period
   2 x `RO_CLK_PERIOD` (`ro_out` is half the ring), with the same kind of waivers.
 - It **checks every entry first**: the site must exist and be the RO type (below), no site may be used
-  twice, the instance must exist, and every `ro_cell` must have an entry. A bad entry is reported as
+  twice, no instance may be listed twice (the first entry applies), the instance must exist with
+  every cell named in `RO_BELS`, and every `ro_cell` must have an entry. A bad entry is reported as
   `CRITICAL WARNING: [RO 1-1] ro_place.tcl: gen_ro[2].u_ro NOT placed: SLICE_X38Y104 is a SLICEM in a
   CLBLM_L tile, ...` (or `[RO 1-2]` for a missing entry). That RO is then left completely alone: no
   placement, no fixed route, no `ALLOW_COMBINATORIAL_LOOPS`. Implementation still runs, but
@@ -169,6 +170,12 @@ when `ro_routes.tcl` or `route_design` tries to use the fixed route, with messag
 tile. `ro_routes.tcl` names wires relative to the tile, so one route only fits tiles that are wired
 identically. The type used here is the **SLICEL of a `CLBLM_L` tile**: the most common CLB tile on
 this device (2400 of them), and it has exactly one SLICEL.
+
+The type is defined in one place, `RO_TILE_TYPE` / `RO_SITE_TYPE` at the top of
+`scripts/ro_tools.tcl`. `ro_place.tcl` sources that file (it finds it through the project's file
+list, because inside an implementation run `[info script]` points into the run directory), and
+`ro_sites`, `ro_placement_list` and `ro_check` use the same definition. If the file can't be
+loaded, `[RO 1-3]` says so and no RO is placed (so the bitstream hook stops the build).
 
 **Why the NAND is in the B LUT and not the A LUT.** Inside one switch matrix, every local path to
 the slice CLK pin goes through the wire `FAN_ALT5`. From the A LUT's second output (AMUX), the SR
