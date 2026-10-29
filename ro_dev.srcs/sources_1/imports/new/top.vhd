@@ -72,13 +72,7 @@ architecture Behavioral of top is
     signal uart_rx: std_logic;
     signal pushbutton_n_sync : std_logic;  -- pushbutton after 2-FF synchronizer
 
-    -- Power-on reset: holds reset asserted for 256 clocks after configuration,
-    -- then releases. Guarantees a clean startup reset (defined tx idle-high, etc.)
-    -- without needing the physical pushbutton, and gives sim/hardware parity.
-    signal por_cnt : unsigned(7 downto 0) := (others => '0');
-    signal por_rst : std_logic := '1';
-    -- Terminal count = all-ones for por_cnt's width; tracks the width automatically.
-    constant POR_MAX : unsigned(por_cnt'range) := (others => '1');
+    signal por_rst : std_logic;  -- power-on reset, see por.vhd
     
     -- Internal signals for UART FIFO connection
     signal tx_ena        : std_logic;
@@ -106,17 +100,10 @@ begin
     sync_rx: entity work.ff2_synchronizer
         port map (output_clock => clk, input => A12, output => uart_rx);
 
-    -- Power-on reset generator: count up to 255 once, then deassert por_rst.
-    p_por: process(clk)
-    begin
-        if rising_edge(clk) then
-            if por_cnt = POR_MAX then
-                por_rst <= '0';
-            else
-                por_cnt <= por_cnt + 1;
-            end if;
-        end if;
-    end process;
+    -- Power-on reset: asserted for 256 clocks after configuration, then released.
+    u_por: entity work.por
+        generic map (CNT_WIDTH => 8)
+        port map (clk => clk, rst => por_rst);
 
     -- UART commands: [stages] [id_hi] [id_lo], see ro_ctrl.vhd / README.
     -- Enables one RO at a time and selects the prescaler tap for tio_trigger.
