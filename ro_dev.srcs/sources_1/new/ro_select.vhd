@@ -40,15 +40,20 @@ architecture rtl of ro_select is
     attribute DONT_TOUCH : string;
     attribute DONT_TOUCH of u_root : label is "TRUE";
 begin
-    p_or: process(ro_out)
-        variable v : std_logic;
-    begin
-        v := '0';
-        for i in ro_out'range loop
-            v := v or ro_out(i);
-        end loop;
-        any_ro <= v;
-    end process;
+    -- OR of all ro_out (VHDL-2008 unary reduction; the file is compiled as VHDL 2019).
+    -- With at most one RO on, xor would give the same result, but or says what is meant.
+    any_ro <= or ro_out;
+
+    -- Same without VHDL-2008:
+    -- p_or: process(ro_out)
+    --     variable v : std_logic;
+    -- begin
+    --     v := '0';
+    --     for i in ro_out'range loop
+    --         v := v or ro_out(i);
+    --     end loop;
+    --     any_ro <= v;
+    -- end process;
 
     -- buffer: sel_out = any_ro
     u_root: LUT1

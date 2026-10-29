@@ -122,16 +122,16 @@
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
       </File>
-      <File Path="$PSRCDIR/sources_1/new/ro_select.vhd">
-        <FileInfo>
-          <Attr Name="UsedIn" Val="synthesis"/>
-          <Attr Name="UsedIn" Val="simulation"/>
-        </FileInfo>
-      </File>
       <File Path="$PSRCDIR/sources_1/imports/staniond_lib/fifo.vhd">
         <FileInfo SFType="VHDL2019">
           <Attr Name="ImportPath" Val="$PPRDIR/../vylet/ro_puf/ro_puf.srcs/sources_1/imports/staniond_lib/fifo.vhd"/>
           <Attr Name="ImportTime" Val="1697375221"/>
+          <Attr Name="UsedIn" Val="synthesis"/>
+          <Attr Name="UsedIn" Val="simulation"/>
+        </FileInfo>
+      </File>
+      <File Path="$PSRCDIR/sources_1/new/ro_select.vhd">
+        <FileInfo SFType="VHDL2019">
           <Attr Name="UsedIn" Val="synthesis"/>
           <Attr Name="UsedIn" Val="simulation"/>
         </FileInfo>
