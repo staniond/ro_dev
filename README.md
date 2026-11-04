@@ -1,31 +1,47 @@
 # ro-dev
 
-Ring oscillators (ROs) for an RO-PUF on the CW305 board (Artix-7 `xc7a100tftg256-1`, Vivado 2025.1).
+Ring oscillators (ROs) for an RO-PUF on the CW305 board, Vivado 2025.1. One project builds the
+same design for the Artix-7 `xc7a100t`, `xc7a50t` and `xc7a35t` (all `ftg256-1`).
 Each RO sits in one slice, at a site you choose, and all ROs have **identical placement and routing**
 that never leaves the RO's own CLB and its switch matrix.
 The RO architecture is from Hesselbarth et al., *Large Scale RO PUF Analysis over Slice Type,
 Evaluation Time and Temperature on 28nm Xilinx FPGAs* (HOST 2018), Fig. 1 (`ro_architecture.png`).
 
-## Quick start: reproduce the bitstream
+## Quick start: reproduce the bitstreams
 
 Needs Vivado 2025.1 with Artix-7 support.
 
-1. Clone the repo and open `ro_dev.xpr` in Vivado.
-2. Click **Generate Bitstream**. Vivado offers to run synthesis and implementation first; say yes.
+Each FPGA has its own synthesis + implementation run; sources and constraints are shared (see
+[Supported FPGAs](#supported-fpgas-35t-50t-100t)):
 
-That's all, no Tcl needed. The RO placement and fixed routes are constraint files in the project
-(applied automatically), and right before writing the bitstream a hook checks every RO. The
-bitstream (`ro_dev.runs/impl_1/top.bit`) is only written if all ROs are OK; the check's table is in
-`ro_dev.runs/impl_1/runme.log`:
+| FPGA               | Runs                     | Bitstream                      |
+| ------------------ | ------------------------ | ------------------------------ |
+| `xc7a100tftg256-1` | `synth_1`, `impl_1`      | `ro_dev.runs/impl_1/top.bit`   |
+| `xc7a50tftg256-1`  | `synth_a50`, `impl_a50`  | `ro_dev.runs/impl_a50/top.bit` |
+| `xc7a35tftg256-1`  | `synth_a35`, `impl_a35`  | `ro_dev.runs/impl_a35/top.bit` |
+
+A bitstream only loads into the part it was built for (the FPGA checks the IDCODE in it).
+
+1. Clone the repo and open `ro_dev.xpr` in Vivado.
+2. Build:
+   - **One FPGA:** in the **Design Runs** window, right-click its `impl_*` run -> **Make Active**, then
+     click **Generate Bitstream**. Vivado offers to run synthesis and implementation first; say yes.
+   - **All three:** in the Tcl Console:
+     `launch_runs impl_1 impl_a50 impl_a35 -to_step write_bitstream -jobs 6`
+
+That's all, no other Tcl needed. The RO placement and fixed routes are constraint files in the
+project (applied automatically), and right before writing the bitstream a hook checks every RO. The
+bitstream is only written if all ROs are OK; the check's table is in the run's log
+(`ro_dev.runs/impl_1/runme.log`, `.../impl_a50/runme.log`, ...):
 
 ```
-gen_ro[0].u_ro   SLICE_X39Y100   CLBLM_L_X24Y100   OK
+gen_ro[0].u_ro   SLICE_X11Y50    CLBLM_L_X8Y50     OK
 ...
 ro_check: <N> RO(s), 0 with problems
 ```
 
 A timing failure would not stop the bitstream (Vivado only gives a critical warning), so glance at
-WNS / WHS / TPWS of `impl_1` in the **Design Runs** window: none should be negative.
+WNS / WHS / TPWS of each `impl_*` run in the **Design Runs** window: none should be negative.
 
 After opening, `git status` may show `ro_dev.xpr` as modified: Vivado rewrites a few path entries
 (`ImportPath`). That's harmless.
@@ -106,12 +122,12 @@ location. The rest gets placed by `place_design` during implementation (`impl_1`
 `scripts/ro_tools.tcl` is *not* a constraint file. You `source` it yourself in the Tcl Console,
 and the bitstream hook sources it too.
 
-### `scripts/ro_check_hook.tcl` (impl_1 hook, runs automatically)
+### `scripts/ro_check_hook.tcl` (impl run hook, runs automatically)
 
-Set as `impl_1` property `STEPS.WRITE_BITSTREAM.TCL.PRE` (GUI: *Settings -> Implementation ->
+Set as `impl_1` / `impl_a50` / `impl_a35` property `STEPS.WRITE_BITSTREAM.TCL.PRE` (GUI: *Settings -> Implementation ->
 Write Bitstream -> tcl.pre*). Right before every `write_bitstream` it runs `ro_check` on the routed
 design and **fails the step if any RO isn't OK**. The `ro_check` table is in the run log
-(`ro_dev.runs/impl_1/runme.log`).
+(e.g. `ro_dev.runs/impl_1/runme.log`).
 
 This is the one gate that covers everything. A Tcl error in `ro_place.tcl` or `ro_routes.tcl` only
 becomes a critical warning, and Vivado then skips the rest of that file. For example, if
@@ -169,7 +185,7 @@ when `ro_routes.tcl` or `route_design` tries to use the fixed route, with messag
 **RO type.** All ROs must be the same "type": the same tile type and the same slice within the
 tile. `ro_routes.tcl` names wires relative to the tile, so one route only fits tiles that are wired
 identically. The type used here is the **SLICEL of a `CLBLM_L` tile**: the most common CLB tile on
-this device (2400 of them), and it has exactly one SLICEL.
+these devices (2400 on the 100T, 900 on the 35T/50T), and it has exactly one SLICEL.
 
 The type is defined in one place, `RO_TILE_TYPE` / `RO_SITE_TYPE` at the top of
 `scripts/ro_tools.tcl`. `ro_place.tcl` sources that file (it finds it through the project's file
@@ -322,7 +338,7 @@ python3 scripts/ro_uart.py /dev/ttyUSB0 --stop               # all ROs off
 
 ## Walkthrough: the flow step by step
 
-**Not needed to build** (that's just *Generate Bitstream*, see [Quick start](#quick-start-reproduce-the-bitstream)).
+**Not needed to build** (that's just *Generate Bitstream*, see [Quick start](#quick-start-reproduce-the-bitstreams)).
 These steps run the same flow by hand so you can see what happens at each stage, inspect the
 result, and regenerate `ro_routes.tcl` if you ever change `RO_BELS` or `LOCK_PINS`.
 
@@ -357,7 +373,7 @@ When the run finishes:
 
 ```tcl
 open_run synth_1
-get_property LOC [get_cells {gen_ro[0].u_ro/ff}]          ;# -> SLICE_X39Y100
+get_property LOC [get_cells {gen_ro[0].u_ro/ff}]          ;# -> SLICE_X11Y50
 get_property BEL [get_cells {gen_ro[0].u_ro/*}]           ;# the 6 BELs
 report_utilization -hierarchical                           ;# each gen_ro: 5 LUTs, 1 FF
 select_objects [get_cells {gen_ro[0].u_ro/*}]              ;# see them in the Device window
@@ -402,6 +418,9 @@ reorder_files -fileset constrs_1 -after [get_files ro_place.tcl] [get_files ro_r
 launch_runs impl_1 -to_step write_bitstream -jobs 8
 ```
 
+(The walkthrough uses the 100T runs; for the other FPGAs replace `synth_1` / `impl_1` with
+`synth_a50` / `impl_a50` or `synth_a35` / `impl_a35`.)
+
 When the run finishes:
 
 `ro_check` has already run in the bitstream hook (its table is in `ro_dev.runs/impl_1/runme.log`);
@@ -421,17 +440,21 @@ The bitstream is `ro_dev.runs/impl_1/top.bit`.
 
 ## Adding more ROs
 
-**1. Pick sites.** With a synthesized or implemented design open:
+**1. Pick sites.** `RO_PLACEMENT` is shared by all three FPGAs, so every site must be a legal RO
+site on each of them. The 35T/50T RO sites are a subset of the 100T's, so pick them with a **35T or
+50T** design open (synthesized or implemented; `synth_a50` must have run):
 
 ```tcl
+open_run synth_a50 -name a50
 source scripts/ro_tools.tcl
 ro_sites X0Y2                         ;# all CLBLM_L SLICELs in clock region X0Y2
 lrange [ro_sites X0Y2] 0 15           ;# just the first 16
-llength [ro_sites]                    ;# 2400 on the whole device
+llength [ro_sites]                    ;# 900 on the 35T/50T (2400 on the 100T)
 ```
 
 Use only sites from `ro_sites`, i.e. the same RO type. Any other slice won't fit the routes;
-`ro_place.tcl` rejects it (see above).
+`ro_place.tcl` rejects it (see above). A site picked on the 100T alone may be illegal on the 35T/50T;
+see [Supported FPGAs](#supported-fpgas-35t-50t-100t).
 
 **2. Instantiate them** in your RTL as `entity work.ro_cell(rtl)`. In the current `top.vhd` that's
 just `constant N_RO`; `ro_ctrl` and `ro_select` take the count as a generic.
@@ -440,10 +463,10 @@ just `constant N_RO`; `ro_ctrl` and `ro_select` take the count as a generic.
 
 ```tcl
 set RO_PLACEMENT {
-    gen_ro[0].u_ro  SLICE_X39Y100
-    gen_ro[1].u_ro  SLICE_X39Y102
+    gen_ro[0].u_ro  SLICE_X11Y50
+    gen_ro[1].u_ro  SLICE_X11Y52
     ...
-    gen_ro[15].u_ro SLICE_X43Y110
+    gen_ro[15].u_ro SLICE_X13Y60
 }
 ```
 
@@ -453,19 +476,64 @@ For many ROs, generate the list instead of typing it, with `ro_placement_list co
 ```tcl
 ro_placement_list 256 X0Y2       ;# 256 ROs on consecutive sites of clock region X0Y2
 ro_placement_list 64 X0Y2 2      ;# 64 ROs on every second site
-ro_placement_list 2400           ;# every legal site on the device
+ro_placement_list 900            ;# every legal site (with a 35T/50T design open)
 ```
 
 It stops with an error if the region has too few sites. Tested: 256 ROs build with all ROs `OK`
 and timing met.
 
-**4. Rebuild:** just *Generate Bitstream*. `ro_routes.tcl` stays valid because it is applied to every
-`ro_cell` automatically, so step 4 of the walkthrough isn't needed. The bitstream hook runs `ro_check`;
-check in the run log that it reports as many ROs as you instantiated, all `OK`.
+**4. Rebuild:** build all three runs (see [Quick start](#quick-start-reproduce-the-bitstreams)).
+`ro_routes.tcl` stays valid because it is applied to every `ro_cell` automatically, so step 4 of the
+walkthrough isn't needed. The bitstream hook runs `ro_check`; check in each run's log that it reports as many ROs as you instantiated, all `OK`.
 
 If the bitstream step fails, look at **Critical Warnings** (Messages tab) and the `ro_check` table
 in the run log. `[RO 1-1]` / `[RO 1-2]` means a RO was not placed (wrong site, duplicate, missing
 `RO_PLACEMENT` entry, or renamed instance).
+
+## Supported FPGAs (35T, 50T, 100T)
+
+The CW305 comes with different Artix-7 parts, all in the same `ftg256` package and speed grade -1.
+What differs is the fabric layout (from the Vivado 2025.1 device models):
+
+|                          | `xc7a35t`                  | `xc7a50t`               | `xc7a100t`                                         |
+| ------------------------ | -------------------------- | ----------------------- | -------------------------------------------------- |
+| Die                      | the 50T die                | 50T die                 | 100T die (larger, different layout)                |
+| Clock regions            | 2 x 3 (X0Y0..X1Y2)         | 2 x 3 (X0Y0..X1Y2)      | 2 x 4 (X0Y0..X1Y3)                                 |
+| Slice sites              | X0..65, Y0..149            | X0..65, Y0..149         | X0..89, Y0..199                                    |
+| Usable LUTs              | 20 800                     | 32 600                  | 63 400                                             |
+| RO sites (CLBLM_L SLICEL) | 900                       | 900                     | 2400                                               |
+| RO site columns          | X11 X13 X31 X35 X51 X57    | same                    | X11 X13 X31 X35 X39 X43 X47 X51 X57 X59 X75 X81    |
+
+- **35T = 50T die.** Vivado models the 35T as the full 50T die (same sites, same names, same clock
+  regions); it only caps the resources the design may use (20 800 LUTs, fewer BRAM/DSP), and the part
+  has its own IDCODE. So a site name on a 35T and a 50T is the same physical spot.
+- **100T is a different die.** Every RO site of the 50T die is also a RO site on the 100T, but not the
+  other way round: e.g. columns `SLICE_X39` and `SLICE_X43` are `CLBLM_L` on the 100T but `CLBLM_R`
+  (switch matrix on the other side) on the 35T/50T, so the routes don't fit there. Clock-region names
+  also cover different columns: `SLICE_X51` is in `X1Y*` on the 50T but in `X0Y*` on the 100T.
+
+**What is shared, unchanged, by all three:**
+
+- `cw305_main.xdc`: the pinout is the same; all pins used have the same bank and function.
+- `ro_routes.tcl`: the `CLBLM_L` and `INT_L` tiles are wired identically, so one set of routes fits.
+- `ro_place.tcl`, `ro_prescaler.tcl`, `ro_tools.tcl`, `ro_check_hook.tcl`: nothing part-specific.
+- `RO_CLK_PERIOD`: same speed grade, same delays.
+- The RTL: only LUTs, flip-flops and inferred logic, no IP or clocking primitives.
+
+The only rule: **`RO_PLACEMENT` must be legal on every part**, i.e. use only RO sites of the 35T/50T
+(see [Adding more ROs](#adding-more-ros)). If an entry isn't, `ro_place.tcl` reports `[RO 1-1]` in the
+35T/50T runs and the hook stops their bitstream.
+
+The extra runs were made from `synth_1` / `impl_1` with `copy_run`, which copies the strategy, the
+bitstream hook and the run settings. Another `ftg256` part would be added the same way (e.g. the
+xc7a75t, not tested):
+
+```tcl
+copy_run -name synth_a75 [get_runs synth_1]
+copy_run -name impl_a75 -parent_run synth_a75 [get_runs impl_1]
+set_property PART xc7a75tftg256-1 [get_runs synth_a75]
+set_property PART xc7a75tftg256-1 [get_runs impl_a75]
+```
 
 ## RO timing: ring period and the clock constraint
 

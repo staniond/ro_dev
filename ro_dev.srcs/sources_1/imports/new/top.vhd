@@ -54,7 +54,7 @@ architecture Behavioral of top is
     constant BAUD_RATE : integer := 115200;
 
     -- Ring oscillators (placement: constrs_1/new/ro_place.tcl)
-    constant N_RO : integer := 256;
+    constant N_RO : integer := 600;
     signal ro_out : std_logic_vector(N_RO-1 downto 0);
     signal ro_en  : std_logic_vector(N_RO-1 downto 0);  -- one-hot from ro_ctrl
 
