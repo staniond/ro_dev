@@ -1,0 +1,9 @@
+# Python packages for ro_uart.py, scope.py and ro_measure.py
+pyserial>=3.5
+pyvisa>=1.14
+pyvisa-py>=0.7
+pyusb>=1.2
+zeroconf>=0.130    # pyvisa-py network discovery (HiSLIP); without it, every run warns
+psutil>=5.9        # pyvisa-py network discovery on all interfaces; without it, every run warns
+h5py>=3.10
+numpy>=1.26

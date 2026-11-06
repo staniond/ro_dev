@@ -61,3 +61,12 @@ Large_scale_RO_PUF_analysis_over_slice_type_evaluation_time_and_temperature_on_2
 
 # Python bytecode (scripts/)
 __pycache__/
+
+# Python venv of scripts/ (recreate: python3 -m venv scripts/.venv && scripts/.venv/bin/pip install -r scripts/requirements.txt)
+scripts/.venv/
+__pycache__/
+
+#HDF5 files
+*.hdf5
+*.h5
+
