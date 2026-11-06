@@ -6,4 +6,5 @@ pyusb>=1.2
 zeroconf>=0.130    # pyvisa-py network discovery (HiSLIP); without it, every run warns
 psutil>=5.9        # pyvisa-py network discovery on all interfaces; without it, every run warns
 h5py>=3.10
+tqdm>=4.66
 numpy>=1.26

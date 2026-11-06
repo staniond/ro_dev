@@ -42,7 +42,10 @@ Rows not measured (aborted run) have ro = -1; attribute `rows_done` counts the w
 A crash while the file is open (power cut, killed process) can damage the whole file, i.e. all
 chips in it: keep a backup copy of the file.
 
-Needs h5py and numpy, plus what ro_uart.py and scope.py need.
+Console: a progress bar over all readings, one summary line per RO (mean f_RO and the spread
+of its readings) and a line for every reading with a problem.
+
+Needs h5py, numpy and tqdm, plus what ro_uart.py and scope.py need.
 """
 
 import argparse
@@ -55,6 +58,7 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+from tqdm import tqdm
 
 from ro_uart import ERROR, STOP, send_command
 from scope import STATS, acquire_single, clear_stats, open_scope, read_p1, trigger_mode
@@ -229,16 +233,19 @@ def main():
 
         row = 0
         empty = 0   # readings in a row without data
+        bar = tqdm(total=a.ros * a.repeats, unit="reading", desc=f"{a.part}/{a.chip}", dynamic_ncols=True)
         try:
             for ro_id in range(a.ros):
+                site = placement[ro_id]
+                bar.set_postfix_str(f"RO {ro_id} {site}")
                 start_ro(a.port, ro_id, a.stages)
                 time.sleep(a.settle)
+                f_ro = []   # MHz, readings of this RO with data
                 for rep in range(a.repeats):
                     r = measure(scope)
                     t = time.time()
 
                     d["ro"][row], d["rep"][row], d["time"][row] = ro_id, rep, t
-                    site = placement[ro_id]
                     x, y = re.fullmatch(r"SLICE_X(\d+)Y(\d+)", site).groups()
                     d["site"][row], d["site_x"][row], d["site_y"][row] = site, int(x), int(y)
                     for name in STATS:
@@ -250,20 +257,28 @@ def main():
                     g.attrs["rows_done"] = row
                     f.flush()
 
+                    bar.update()
                     problem = ("no trigger" if not r["triggered"] else
                                "no data" if r["num"] == 0 else
                                r["status_desc"] if r["status_desc"] != "Valid." else "")
-                    print(f"RO {ro_id:4d} {site:14s} #{rep:<3d} P1 mean {r['mean']:.9g} Hz  sdev {r['sdev']:.4g}"
-                          f"  num {r['num']:6d}  f_RO {r['mean'] * divider / 1e6:.4f} MHz"
-                          + (f"  !! {problem}" if problem else ""))
+                    if problem:
+                        tqdm.write(f"RO {ro_id:4d} {site:14s} #{rep:<3d} !! {problem}"
+                                   f"  (num {r['num']}, P1 mean {r['mean']:.9g} Hz)")
+                    if r["num"] > 0:
+                        f_ro.append(r["mean"] * divider / 1e6)
 
                     empty = empty + 1 if r["num"] == 0 else 0
                     if empty >= MAX_EMPTY:
                         raise RuntimeError(f"{MAX_EMPTY} readings in a row without data: no signal on"
                                            " the P1 channel, RO not running, or trigger settings?")
+
+                spread = f"  sd {np.std(f_ro, ddof=1) * 1000:5.0f} kHz" if len(f_ro) > 1 else ""
+                tqdm.write(f"RO {ro_id:4d} {site:14s} f_RO {np.mean(f_ro) if f_ro else np.nan:9.4f} MHz"
+                           f"{spread}  ({len(f_ro)}/{a.repeats} readings)")
         except KeyboardInterrupt:
             print("interrupted")
         finally:
+            bar.close()
             # Each step on its own, so a failing one neither skips the others nor hides the
             # error that ended the run
             print(f"{row} of {a.ros * a.repeats} measurements in {out}:{run}")
